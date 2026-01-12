@@ -6,44 +6,55 @@ TOKEN = "8549411174:AAH0hzB0pZSeLwRbbP1AMPmjk2LBmNb2FCg"
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# Подключаем базу
 db = sqlite3.connect("books.db")
 cur = db.cursor()
 cur.execute("CREATE TABLE IF NOT EXISTS library (title TEXT, file_id TEXT)")
 db.commit()
 
-@dp.message(Command("start"))
-async def start(message: types.Message):
-    await message.answer("⚓️ Бот готов. Пришли книгу в канал, а потом напиши её название здесь.")
+# Функция сохранения книги (вынесена отдельно)
+def add_to_db(name, f_id):
+    name = name.lower()
+    # Проверяем, нет ли уже такой книги, чтобы не дублировать
+    cur.execute("SELECT * FROM library WHERE file_id = ?", (f_id,))
+    if not cur.fetchone():
+        cur.execute("INSERT INTO library VALUES (?, ?)", (name, f_id))
+        db.commit()
+        return True
+    return False
 
-# Команда для проверки базы
+# Команда для сканирования (пиши её в канале)
+@dp.channel_post(Command("scan"))
+async def scan_channel(message: types.Message):
+    count = 0
+    # Просим бота заглянуть в историю (последние 100 постов)
+    async for msg in bot.get_chat_history(message.chat.id, limit=100):
+        if msg.document:
+            if add_to_db(msg.document.file_name, msg.document.file_id):
+                count += 1
+    await bot.send_message(message.chat.id, f"✅ Сканирование завершено! Добавлено новых книг: {count}")
+
 @dp.message(Command("test"))
 async def test_db(message: types.Message):
     cur.execute("SELECT COUNT(*) FROM library")
     count = cur.fetchone()[0]
-    await message.answer(f"📊 Сейчас в базе книг: {count}")
+    await message.answer(f"📊 Всего книг в поиске: {count}")
 
-# Слушаем файлы везде
 @dp.channel_post(F.document)
 @dp.message(F.document)
-async def save_book(message: types.Message):
-    file_name = message.document.file_name.lower()
-    file_id = message.document.file_id
-    cur.execute("INSERT INTO library VALUES (?, ?)", (file_name, file_id))
-    db.commit()
-    # Бот ответит в личку админу (тебе), если файл прошел
-    print(f"DEBUG: Сохранил {file_name}")
+async def handle_docs(message: types.Message):
+    if add_to_db(message.document.file_name, message.document.file_id):
+        print(f"Добавлена книга: {message.document.file_name}")
 
 @dp.message()
 async def search(message: types.Message):
     query = message.text.lower()
-    cur.execute("SELECT file_id FROM library WHERE title LIKE ?", (f'%{query}%',))
+    cur.execute("SELECT title, file_id FROM library WHERE title LIKE ?", (f'%{query}%',))
     results = cur.fetchall()
     if results:
-        for f_id in results:
-            await bot.send_document(message.chat.id, f_id)
+        for title, f_id in results:
+            await bot.send_document(message.chat.id, f_id, caption=f"Найдено: {title}")
     else:
-        await message.answer("❌ Книга не найдена. Сначала загрузи её в канал!")
+        await message.answer("❌ Книга не найдена.")
 
 async def main():
     await dp.start_polling(bot)
